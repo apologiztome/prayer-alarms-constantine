@@ -22,16 +22,23 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      # Use 'packages' input (api-level/build-tools inputs are deprecated)
-      - name: Setup Android SDK
+      # Install cmdline-tools only (no packages here)
+      - name: Setup Android SDK (cmdline-tools)
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
           cmdline-tools-version: latest
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
+
+      # Install required SDK packages with sdkmanager (separate args)
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          yes | "$SDKMANAGER" --licenses || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Generate Android project (WebView with embedded HTML preview)
         shell: bash
@@ -162,7 +169,7 @@ jobs:
           }
           EOF
 
-          # HTML preview (trimmed for brevity). I can swap in the full 8-step HTML on request.
+          # Minimal HTML (I can swap to the full 8-step wizard on request)
           cat > app/src/main/assets/index.html <<'EOF'
           <!doctype html><html lang="en"><head>
           <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -198,10 +205,10 @@ jobs:
             <section id="screenAlarms" style="display:none">
               <div class="card">
                 <div style="display:flex;align-items:center;gap:10px">
-                  <div style="flex:1"><b>Alarms</b> — matches your 8-step wizard flow</div>
+                  <div style="flex:1"><b>Alarms</b> — (preview) wizard trimmed</div>
                   <button class="btn btn-green" id="btnAdd">＋ Add</button>
                 </div>
-                <div class="muted">Use ACTIONS to Edit/Test/Duplicate/Delete.</div>
+                <div class="muted">Full 8‑step wizard available on request.</div>
               </div>
               <div id="alarmsContainer"></div>
             </section>
@@ -213,4 +220,44 @@ jobs:
           function sanitize(s){return (s||"").trim().match(/^\\d{1,2}:\\d{2}/)?.[0]||"--:--"}
           async function load(){try{const r=await fetch(API);const j=await r.json();const d=j.data;const gd=d.date.gregorian.date.replace(/-/g,"/");const hj=d.date.hijri.day+" "+d.date.hijri.month.en+" "+d.date.hijri.year;document.getElementById("gregDate").textContent=gd;document.getElementById("hijriDate").textContent=hj;const t=d.timings;const f=k=>sanitize(t[k]);document.getElementById("tFajr").textContent=f("Fajr");document.getElementById("tSunrise").textContent=f("Sunrise");document.getElementById("tDhuhr").textContent=f("Dhuhr");document.getElementById("tAsr").textContent=f("Asr");document.getElementById("tMaghrib").textContent=f("Maghrib");document.getElementById("tIsha").textContent=f("Isha");document.getElementById("homeStatus").textContent="Constantine"}catch(e){document.getElementById("homeStatus").textContent="Failed"}} load();
           document.getElementById("tabHome").onclick=()=>{document.getElementById("screenHome").style.display="";document.getElementById("screenAlarms").style.display="none";document.getElementById("tabHome").classList.add("active");document.getElementById("tabAlarms").classList.remove("active");document.getElementById("topTitle").textContent="Home - Muslim's App (Preview)"}
-          document.getElementById("tabAlarms").onclick=()=>{document.getElementById("screenHome").style.display="none";document.getElementById("screenAlarms").style.display="";document.getElementById("tabAlarms").classList.add("active");document.getElementById("tabHome").classList.remove("active");document.getElementById("topTitle").textContent="Alarms 
+          document.getElementById("tabAlarms").onclick=()=>{document.getElementById("screenHome").style.display="none";document.getElementById("screenAlarms").style.display="";document.getElementById("tabAlarms").classList.add("active");document.getElementById("tabHome").classList.remove("active");document.getElementById("topTitle").textContent="Alarms - Muslim's App (Preview)"}
+          document.getElementById("homeRefresh").onclick=load;
+          let globalOffset=parseInt(localStorage.getItem("preview_global_offset")||"10",10);
+          const upd=()=>document.getElementById("globalOffset").textContent=globalOffset; upd();
+          document.getElementById("homePlus").onclick=()=>{globalOffset=Math.min(120,globalOffset+1);localStorage.setItem("preview_global_offset",globalOffset);upd()}
+          document.getElementById("homeMinus").onclick=()=>{globalOffset=Math.max(0,globalOffset-1);localStorage.setItem("preview_global_offset",globalOffset);upd()}
+          document.getElementById("btnAdd").onclick=()=>alert("Wizard opens here (preview). Say 'swap to full HTML' to embed the complete 8-step wizard.");
+          </script>
+          </body></html>
+          EOF
+
+      # One-time wrapper generation (kept for convenience)
+      - name: Generate Gradle wrapper (Gradle 8.7)
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: 8.7
+          arguments: wrapper
+
+      - name: Make wrapper executable
+        run: chmod +x gradlew
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/app-debug.apk release/PrayerAlarms-Constantine-preview.apk
+
+      - name: Create GitHub Release (latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: preview-${{ github.run_number }}
+          name: Preview ${{ github.run_number }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: release/PrayerAlarms-Constantine-preview.apk
